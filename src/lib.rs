@@ -6,6 +6,7 @@ use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::fmt;
 
+/// An atomic number based lock that makes no system calls and busy waits instead of locking.
 pub struct SpinLock<T: ?Sized> {
     shared_value: Arc<AtomicUsize>,
     next_id: Arc<AtomicUsize>,
@@ -16,6 +17,15 @@ pub struct SpinLock<T: ?Sized> {
 type TryLockResult<SpinLockGuard> = Result<SpinLockGuard, usize>;
 
 impl<T> SpinLock<T> {
+    /// Creates a new spinlock in an unlocked state ready for use.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spinlock::SpinLock;
+    ///
+    /// let sl = SpinLock::new(1984);
+    /// ```
     pub fn new(t: T) -> Self {
         SpinLock {
             shared_value: Arc::new(AtomicUsize::new(0)),
@@ -27,6 +37,31 @@ impl<T> SpinLock<T> {
 }
 
 impl<T: ?Sized> SpinLock<T> {
+    /// Locks a spinlock, busy waiting until the exclusive access is available.
+    ///
+    /// The function will spin in the local thread until it is available to acquire
+    /// the lock. Upon returning, the thread is the only thread with the lock held.
+    /// An RAII guard is returned to allow scoped unlock of the lock. When the guard
+    /// goes out of scope, the spinlock will be unlocked.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic a lock has already been acquired with the same clone of the
+    /// spinlock.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spinlock::SpinLock;
+    /// use std::thread;
+    ///
+    /// let sl = SpinLock::new(1984);
+    /// let cl = sl.clone();
+    /// thread::spawn(move ||{
+    ///     *cl.lock() = 2084;
+    /// }).join().expect("thread::spawn failed");
+    /// assert_eq!(*sl.lock(), 2084);
+    /// ```
     pub fn lock(&self) -> SpinLockGuard<T> {
         //spin 
         while self.shared_value.compare_and_swap(0, self.id, Ordering::SeqCst) != self.id {
@@ -35,6 +70,37 @@ impl<T: ?Sized> SpinLock<T> {
             lock: self
         }
     }
+
+    /// Attempts to acquire a lock.
+    ///
+    /// If the lock could not be acquire at this time, then [`Err`] is returned.
+    /// Otherwise, an RAII guard is returned. The lock will be unlocked when the
+    /// guard is dropped.
+    ///
+    /// This function does not block.
+    /// 
+    /// # Panics
+    ///
+    /// This function will panic a lock has already been acquired with the same clone of the
+    /// spinlock.
+    ///
+    /// ```
+    /// use spinlock::SpinLock;
+    /// use std::thread;
+    ///
+    /// let sl = SpinLock::new(2084);
+    /// let cl = sl.clone();
+    ///
+    /// thread::spawn(move || {
+    ///     let mut lock = cl.try_lock();
+    ///     if let Ok(ref mut mutex) = lock {
+    ///         **mutex = 10;
+    ///     } else {
+    ///         println!("try_lock failed");
+    ///     }
+    /// }).join().expect("thread::spawn failed");
+    /// assert_eq!(*sl.lock(), 10);
+    /// ```
     pub fn try_lock(&self) -> TryLockResult<SpinLockGuard<T>> {
         assert_ne!(self.id, self.shared_value.load(Ordering::SeqCst));
         let id = self.shared_value.compare_and_swap(0, self.id, Ordering::SeqCst);
@@ -78,6 +144,8 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for SpinLock<T> {
 unsafe impl<T: ?Sized + Send> Send for SpinLock<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for SpinLock<T> {}
 
+/// An RAII implementation of a "scoped lock" of a spinlock. When this structure is dropped (falls out
+/// of scope), the lock will be unlocked.
 pub struct SpinLockGuard<'a, T: ?Sized + 'a> {
     lock: &'a SpinLock<T>
 }
