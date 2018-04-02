@@ -7,6 +7,9 @@ use std::ops::{Deref, DerefMut};
 use std::fmt;
 
 /// An atomic number based lock that makes no system calls and busy waits instead of locking.
+/// modeled after std::sync::Mutex and std::sync::MutexGuard
+/// the examples and documentation are just slight edits of the examples and documentation from
+/// those.
 pub struct SpinLock<T: ?Sized> {
     shared_value: Arc<AtomicUsize>,
     next_id: Arc<AtomicUsize>,
@@ -185,6 +188,7 @@ impl<'a, T: ?Sized + fmt::Debug> fmt::Debug for SpinLockGuard<'a, T> {
 mod tests {
     use super::*;
     use std::thread;
+    use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 
     #[test]
     fn smoke() {
@@ -273,5 +277,27 @@ mod tests {
         if let Err(e) = child.join() {
             panic!(e);
         }
+    }
+
+    // copied/edited from crossbeam's arc_cell test
+    #[test]
+    fn drops() {
+        static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
+
+        struct Foo;
+
+        impl Drop for Foo {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+        let l = SpinLock::new(Foo);
+        let c = l.clone();
+        drop(l);
+        assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+        drop(c);
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
     }
 }
