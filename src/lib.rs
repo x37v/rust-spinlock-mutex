@@ -10,27 +10,27 @@ use std::fmt;
 /// modeled after std::sync::Mutex and std::sync::MutexGuard
 /// the examples and documentation are just slight edits of the examples and documentation from
 /// those.
-pub struct SpinLock<T: ?Sized> {
+pub struct Mutex<T: ?Sized> {
     shared_value: Arc<AtomicUsize>,
     next_id: Arc<AtomicUsize>,
     id: usize,
     data: Arc<UnsafeCell<T>>
 }
 
-type TryLockResult<SpinLockGuard> = Result<SpinLockGuard, usize>;
+type TryLockResult<MutexGuard> = Result<MutexGuard, usize>;
 
-impl<T> SpinLock<T> {
+impl<T> Mutex<T> {
     /// Creates a new spinlock in an unlocked state ready for use.
     ///
     /// # Examples
     ///
     /// ```
-    /// use spinlock::SpinLock;
+    /// use spinlock::Mutex;
     ///
-    /// let sl = SpinLock::new(1984);
+    /// let sl = Mutex::new(1984);
     /// ```
     pub fn new(t: T) -> Self {
-        SpinLock {
+        Mutex {
             shared_value: Arc::new(AtomicUsize::new(0)),
             next_id: Arc::new(AtomicUsize::new(2)),
             id: 1,
@@ -39,7 +39,7 @@ impl<T> SpinLock<T> {
     }
 }
 
-impl<T: ?Sized> SpinLock<T> {
+impl<T: ?Sized> Mutex<T> {
     /// Locks a spinlock, busy waiting until the exclusive access is available.
     ///
     /// The function will spin in the local thread until it is available to acquire
@@ -55,21 +55,21 @@ impl<T: ?Sized> SpinLock<T> {
     /// # Examples
     ///
     /// ```
-    /// use spinlock::SpinLock;
+    /// use spinlock::Mutex;
     /// use std::thread;
     ///
-    /// let sl = SpinLock::new(1984);
+    /// let sl = Mutex::new(1984);
     /// let cl = sl.clone();
     /// thread::spawn(move ||{
     ///     *cl.lock() = 2084;
     /// }).join().expect("thread::spawn failed");
     /// assert_eq!(*sl.lock(), 2084);
     /// ```
-    pub fn lock(&self) -> SpinLockGuard<T> {
+    pub fn lock(&self) -> MutexGuard<T> {
         //spin 
         while self.shared_value.compare_and_swap(0, self.id, Ordering::SeqCst) != self.id {
         }
-        SpinLockGuard {
+        MutexGuard {
             lock: self
         }
     }
@@ -88,10 +88,10 @@ impl<T: ?Sized> SpinLock<T> {
     /// spinlock.
     ///
     /// ```
-    /// use spinlock::SpinLock;
+    /// use spinlock::Mutex;
     /// use std::thread;
     ///
-    /// let sl = SpinLock::new(2084);
+    /// let sl = Mutex::new(2084);
     /// let cl = sl.clone();
     ///
     /// thread::spawn(move || {
@@ -104,27 +104,27 @@ impl<T: ?Sized> SpinLock<T> {
     /// }).join().expect("thread::spawn failed");
     /// assert_eq!(*sl.lock(), 10);
     /// ```
-    pub fn try_lock(&self) -> TryLockResult<SpinLockGuard<T>> {
+    pub fn try_lock(&self) -> TryLockResult<MutexGuard<T>> {
         assert_ne!(self.id, self.shared_value.load(Ordering::SeqCst));
         let id = self.shared_value.compare_and_swap(0, self.id, Ordering::SeqCst);
         if self.id == self.shared_value.load(Ordering::SeqCst) {
-            Ok(SpinLockGuard { lock: self })
+            Ok(MutexGuard { lock: self })
         } else {
             Err(id)
         }
     }
 }
 
-impl<T: ?Sized + Default> Default for SpinLock<T> {
-    fn default() -> SpinLock<T> {
-        SpinLock::new(Default::default())
+impl<T: ?Sized + Default> Default for Mutex<T> {
+    fn default() -> Mutex<T> {
+        Mutex::new(Default::default())
     }
 }
 
-impl<T> Clone for SpinLock<T> {
+impl<T> Clone for Mutex<T> {
     fn clone(&self) -> Self {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        SpinLock {
+        Mutex {
             shared_value: self.shared_value.clone(),
             next_id: self.next_id.clone(),
             id: id,
@@ -133,36 +133,36 @@ impl<T> Clone for SpinLock<T> {
     }
 }
 
-impl<T: ?Sized + fmt::Debug> fmt::Debug for SpinLock<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.try_lock() {
-            Ok(guard) => f.debug_struct("SpinLock").field("data", &&*guard).finish(),
+            Ok(guard) => f.debug_struct("Mutex").field("data", &&*guard).finish(),
             Err(id) => {
-                f.debug_struct("SpinLock").field("locked_by", &id).finish()
+                f.debug_struct("Mutex").field("locked_by", &id).finish()
             }
         }
     }
 }
 
-unsafe impl<T: ?Sized + Send> Send for SpinLock<T> {}
-unsafe impl<T: ?Sized + Sync> Sync for SpinLock<T> {}
+unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for Mutex<T> {}
 
 /// An RAII implementation of a "scoped lock" of a spinlock. When this structure is dropped (falls out
 /// of scope), the lock will be unlocked.
-pub struct SpinLockGuard<'a, T: ?Sized + 'a> {
-    lock: &'a SpinLock<T>
+pub struct MutexGuard<'a, T: ?Sized + 'a> {
+    lock: &'a Mutex<T>
 }
 
-impl<'a, T: ?Sized> Drop for SpinLockGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         assert_eq!(self.lock.shared_value.load(Ordering::SeqCst), self.lock.id);
         self.lock.shared_value.store(0, Ordering::SeqCst);
     }
 }
 
-impl<'a, T: ?Sized> !Send for SpinLockGuard<'a, T> {}
+impl<'a, T: ?Sized> !Send for MutexGuard<'a, T> {}
 
-impl<'a, T: ?Sized> Deref for SpinLockGuard<'a, T> {
+impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -170,15 +170,15 @@ impl<'a, T: ?Sized> Deref for SpinLockGuard<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> DerefMut for SpinLockGuard<'a, T> {
+impl<'a, T: ?Sized> DerefMut for MutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.lock.data.get() }
     }
 }
 
-impl<'a, T: ?Sized + fmt::Debug> fmt::Debug for SpinLockGuard<'a, T> {
+impl<'a, T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("SpinLockGuard")
+        f.debug_struct("MutexGuard")
             .field("lock", &self.lock)
             .finish()
     }
@@ -192,14 +192,14 @@ mod tests {
 
     #[test]
     fn smoke() {
-        let m = SpinLock::new(());
+        let m = Mutex::new(());
         drop(m.lock());
         drop(m.lock());
     }
 
     #[test]
     fn initial_and_clone() {
-        let lock = SpinLock::new(22);
+        let lock = Mutex::new(22);
         assert_eq!(lock.id, 1);
         assert_eq!(lock.next_id.load(Ordering::SeqCst), 2);
         assert_eq!(lock.shared_value.load(Ordering::SeqCst), 0);
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn try_lock() {
-        let lock = SpinLock::new(532);
+        let lock = Mutex::new(532);
         assert_eq!(lock.id, 1);
         assert_eq!(lock.next_id.load(Ordering::SeqCst), 2);
         assert_eq!(lock.shared_value.load(Ordering::SeqCst), 0);
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn threaded() {
-        let lock = SpinLock::new(1984);
+        let lock = Mutex::new(1984);
         let clone = lock.clone();
         let child = thread::spawn(move || {
             let mut g = clone.lock();
@@ -293,7 +293,7 @@ mod tests {
         }
 
         assert_eq!(DROPS.load(Ordering::SeqCst), 0);
-        let l = SpinLock::new(Foo);
+        let l = Mutex::new(Foo);
         let c = l.clone();
         drop(l);
         assert_eq!(DROPS.load(Ordering::SeqCst), 0);

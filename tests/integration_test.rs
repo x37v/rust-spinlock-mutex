@@ -1,10 +1,10 @@
 extern crate spinlock;
 
-use spinlock::SpinLock;
+use spinlock::Mutex;
 
 #[test]
 fn it_locks() {
-    let lock = SpinLock::new(1984);
+    let lock = Mutex::new(1984);
     let clone = lock.clone();
     let g = lock.lock();
     assert_eq!(*g, 1984);
