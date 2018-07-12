@@ -144,8 +144,8 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     }
 }
 
-unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
-unsafe impl<T: ?Sized + Sync> Sync for Mutex<T> {}
+unsafe impl<T: ?Sized> Send for Mutex<T> {}
+unsafe impl<T: ?Sized> Sync for Mutex<T> {}
 
 /// An RAII implementation of a "scoped lock" of a spinlock. When this structure is dropped (falls out
 /// of scope), the lock will be unlocked.
