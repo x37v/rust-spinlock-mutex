@@ -1,20 +1,23 @@
 #![feature(optin_builtin_traits)]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::cell::UnsafeCell;
-use std::ops::{Deref, DerefMut};
 use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static ID_COUNT: AtomicUsize = AtomicUsize::new(1);
+
+thread_local! {
+    static THREAD_ID: usize = ID_COUNT.fetch_add(1, Ordering::SeqCst);
+}
 
 /// An atomic number based lock that makes no system calls and busy waits instead of locking.
 /// modeled after std::sync::Mutex and std::sync::MutexGuard
 /// the examples and documentation are just slight edits of the examples and documentation from
 /// those.
 pub struct Mutex<T: ?Sized> {
-    shared_value: Arc<AtomicUsize>,
-    next_id: Arc<AtomicUsize>,
-    id: usize,
-    data: Arc<UnsafeCell<T>>
+    shared_value: AtomicUsize,
+    data: UnsafeCell<T>,
 }
 
 type TryLockResult<MutexGuard> = Result<MutexGuard, usize>;
@@ -31,10 +34,8 @@ impl<T> Mutex<T> {
     /// ```
     pub fn new(t: T) -> Self {
         Mutex {
-            shared_value: Arc::new(AtomicUsize::new(0)),
-            next_id: Arc::new(AtomicUsize::new(2)),
-            id: 1,
-            data: Arc::new(UnsafeCell::new(t))
+            shared_value: AtomicUsize::new(0),
+            data: UnsafeCell::new(t),
         }
     }
 }
@@ -49,16 +50,16 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// # Panics
     ///
-    /// This function will panic a lock has already been acquired with the same clone of the
-    /// spinlock.
+    /// This function will panic a lock has already been acquired by the same thread.
     ///
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
     /// use spinlock::Mutex;
     /// use std::thread;
     ///
-    /// let sl = Mutex::new(1984);
+    /// let sl = Arc::new(Mutex::new(1984));
     /// let cl = sl.clone();
     /// thread::spawn(move ||{
     ///     *cl.lock() = 2084;
@@ -66,12 +67,11 @@ impl<T: ?Sized> Mutex<T> {
     /// assert_eq!(*sl.lock(), 2084);
     /// ```
     pub fn lock(&self) -> MutexGuard<T> {
-        //spin 
-        while self.shared_value.compare_and_swap(0, self.id, Ordering::SeqCst) != self.id {
-        }
-        MutexGuard {
-            lock: self
-        }
+        let id = self.get_id();
+        assert_ne!(id, self.shared_value.load(Ordering::SeqCst));
+        //spin
+        while self.shared_value.compare_and_swap(0, id, Ordering::SeqCst) != id {}
+        MutexGuard { lock: self }
     }
 
     /// Attempts to acquire a lock.
@@ -81,17 +81,17 @@ impl<T: ?Sized> Mutex<T> {
     /// guard is dropped.
     ///
     /// This function does not block.
-    /// 
+    ///
     /// # Panics
     ///
-    /// This function will panic a lock has already been acquired with the same clone of the
-    /// spinlock.
+    /// This function will panic a lock has already been acquired by the same thread.
     ///
     /// ```
+    /// use std::sync::Arc;
     /// use spinlock::Mutex;
     /// use std::thread;
     ///
-    /// let sl = Mutex::new(2084);
+    /// let sl = Arc::new(Mutex::new(2084));
     /// let cl = sl.clone();
     ///
     /// thread::spawn(move || {
@@ -105,13 +105,23 @@ impl<T: ?Sized> Mutex<T> {
     /// assert_eq!(*sl.lock(), 10);
     /// ```
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<T>> {
-        assert_ne!(self.id, self.shared_value.load(Ordering::SeqCst));
-        let id = self.shared_value.compare_and_swap(0, self.id, Ordering::SeqCst);
-        if self.id == self.shared_value.load(Ordering::SeqCst) {
+        let id = self.get_id();
+        assert_ne!(id, self.shared_value.load(Ordering::SeqCst));
+        let _ = self.shared_value.compare_and_swap(0, id, Ordering::SeqCst);
+        if id == self.shared_value.load(Ordering::SeqCst) {
             Ok(MutexGuard { lock: self })
         } else {
             Err(id)
         }
+    }
+
+    fn get_id(&self) -> usize {
+        let mut out: usize = 0;
+        THREAD_ID.with(|id| {
+            out = *id;
+        });
+        assert_ne!(0, out);
+        out
     }
 }
 
@@ -121,25 +131,11 @@ impl<T: ?Sized + Default> Default for Mutex<T> {
     }
 }
 
-impl<T> Clone for Mutex<T> {
-    fn clone(&self) -> Self {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        Mutex {
-            shared_value: self.shared_value.clone(),
-            next_id: self.next_id.clone(),
-            id: id,
-            data: self.data.clone()
-        }
-    }
-}
-
 impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.try_lock() {
             Ok(guard) => f.debug_struct("Mutex").field("data", &&*guard).finish(),
-            Err(id) => {
-                f.debug_struct("Mutex").field("locked_by", &id).finish()
-            }
+            Err(id) => f.debug_struct("Mutex").field("locked_by", &id).finish(),
         }
     }
 }
@@ -150,12 +146,12 @@ unsafe impl<T: ?Sized> Sync for Mutex<T> {}
 /// An RAII implementation of a "scoped lock" of a spinlock. When this structure is dropped (falls out
 /// of scope), the lock will be unlocked.
 pub struct MutexGuard<'a, T: ?Sized + 'a> {
-    lock: &'a Mutex<T>
+    lock: &'a Mutex<T>,
 }
 
 impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
-        assert_eq!(self.lock.shared_value.load(Ordering::SeqCst), self.lock.id);
+        assert_ne!(self.lock.shared_value.load(Ordering::SeqCst), 0);
         self.lock.shared_value.store(0, Ordering::SeqCst);
     }
 }
@@ -187,8 +183,9 @@ impl<'a, T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
     use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn smoke() {
@@ -198,23 +195,28 @@ mod tests {
     }
 
     #[test]
-    fn initial_and_clone() {
-        let lock = Mutex::new(22);
-        assert_eq!(lock.id, 1);
-        assert_eq!(lock.next_id.load(Ordering::SeqCst), 2);
+    fn lock() {
+        let lock = Arc::new(Mutex::new(22));
+        let id = lock.get_id();
+        assert_ne!(0, id);
+
         assert_eq!(lock.shared_value.load(Ordering::SeqCst), 0);
-        unsafe { assert_eq!(*lock.data.get(), 22); }
+        unsafe {
+            assert_eq!(*lock.data.get(), 22);
+        }
 
         let clone = lock.clone();
-        assert_eq!(clone.id, 2);
-        assert_eq!(clone.next_id.load(Ordering::SeqCst), 3);
+        assert_eq!(id, clone.get_id());
+
         assert_eq!(clone.shared_value.load(Ordering::SeqCst), 0);
-        unsafe { assert_eq!(*lock.data.get(), 22); }
+        unsafe {
+            assert_eq!(*lock.data.get(), 22);
+        }
 
         {
             let mut g = clone.lock();
-            assert_eq!(clone.shared_value.load(Ordering::SeqCst), 2);
-            assert_eq!(lock.shared_value.load(Ordering::SeqCst), 2);
+            assert_eq!(clone.shared_value.load(Ordering::SeqCst), id);
+            assert_eq!(lock.shared_value.load(Ordering::SeqCst), id);
             assert_eq!(*g, 22);
             *g = 42;
         }
@@ -222,8 +224,8 @@ mod tests {
         assert_eq!(clone.shared_value.load(Ordering::SeqCst), 0);
         {
             let g = lock.lock();
-            assert_eq!(clone.shared_value.load(Ordering::SeqCst), 1);
-            assert_eq!(lock.shared_value.load(Ordering::SeqCst), 1);
+            assert_eq!(clone.shared_value.load(Ordering::SeqCst), id);
+            assert_eq!(lock.shared_value.load(Ordering::SeqCst), id);
             assert_eq!(*g, 42);
         }
         assert_eq!(lock.shared_value.load(Ordering::SeqCst), 0);
@@ -231,22 +233,38 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn lock_panic() {
+        let lock = Arc::new(Mutex::new(532));
+        let clone = lock.clone();
+
+        let _g = clone.lock();
+        let _x = lock.lock();
+    }
+
+    #[test]
     fn try_lock() {
-        let lock = Mutex::new(532);
-        assert_eq!(lock.id, 1);
-        assert_eq!(lock.next_id.load(Ordering::SeqCst), 2);
+        let lock = Arc::new(Mutex::new(532));
         assert_eq!(lock.shared_value.load(Ordering::SeqCst), 0);
 
+        let id = lock.get_id();
+        assert_ne!(0, id);
+
         let clone = lock.clone();
+        let clone2 = lock.clone();
         {
-            let g = lock.try_lock().unwrap();
-            assert_eq!(lock.shared_value.load(Ordering::SeqCst), 1);
+            let r = lock.try_lock();
+            assert!(r.is_ok());
+            let g = r.unwrap();
+            assert_eq!(lock.shared_value.load(Ordering::SeqCst), id);
             assert_eq!(*g, 532);
 
-            {
-                let g2 = clone.try_lock(); //should fail
+            thread::spawn(move || {
+                let g2 = clone2.try_lock(); //should fail
                 assert!(g2.is_err());
-            }
+            }).join()
+            .expect("thread::spawn failed");
+
             assert_eq!(*g, 532);
         }
 
@@ -257,8 +275,40 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
+    fn try_lock_panic() {
+        let lock = Arc::new(Mutex::new(532));
+        let clone = lock.clone();
+
+        let r = clone.try_lock();
+        assert!(r.is_ok());
+        let _ = lock.try_lock();
+    }
+
+    #[test]
+    #[should_panic]
+    fn lock_try_lock_panic() {
+        let lock = Arc::new(Mutex::new(532));
+        let clone = lock.clone();
+
+        let _r = clone.lock();
+        let _ = lock.try_lock();
+    }
+
+    #[test]
+    #[should_panic]
+    fn try_lock_lock_panic() {
+        let lock = Arc::new(Mutex::new(532));
+        let clone = lock.clone();
+
+        let r = clone.try_lock();
+        assert!(r.is_ok());
+        let _ = lock.lock();
+    }
+
+    #[test]
     fn threaded() {
-        let lock = Mutex::new(1984);
+        let lock = Arc::new(Mutex::new(1984));
         let clone = lock.clone();
         let child = thread::spawn(move || {
             let mut g = clone.lock();
@@ -293,7 +343,7 @@ mod tests {
         }
 
         assert_eq!(DROPS.load(Ordering::SeqCst), 0);
-        let l = Mutex::new(Foo);
+        let l = Arc::new(Mutex::new(Foo));
         let c = l.clone();
         drop(l);
         assert_eq!(DROPS.load(Ordering::SeqCst), 0);
