@@ -12,7 +12,7 @@ thread_local! {
 }
 
 /// An atomic number based lock that makes no system calls and busy waits instead of locking.
-/// modeled after std::sync::Mutex and std::sync::MutexGuard
+/// Modeled after std::sync::Mutex and std::sync::MutexGuard,
 /// the examples and documentation are just slight edits of the examples and documentation from
 /// those.
 pub struct Mutex<T: ?Sized> {
