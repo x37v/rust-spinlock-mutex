@@ -1,5 +1,4 @@
-#![feature(optin_builtin_traits)]
-
+use std::marker::PhantomData;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
@@ -71,7 +70,7 @@ impl<T: ?Sized> Mutex<T> {
         assert_ne!(id, self.shared_value.load(Ordering::SeqCst));
         //spin
         while self.shared_value.compare_and_swap(0, id, Ordering::SeqCst) != id {}
-        MutexGuard { lock: self }
+        MutexGuard { lock: self, phantom: Default::default() }
     }
 
     /// Attempts to acquire a lock.
@@ -109,7 +108,7 @@ impl<T: ?Sized> Mutex<T> {
         assert_ne!(id, self.shared_value.load(Ordering::SeqCst));
         let _ = self.shared_value.compare_and_swap(0, id, Ordering::SeqCst);
         if id == self.shared_value.load(Ordering::SeqCst) {
-            Ok(MutexGuard { lock: self })
+            Ok(MutexGuard { lock: self, phantom: Default::default() })
         } else {
             Err(id)
         }
@@ -147,6 +146,7 @@ unsafe impl<T: ?Sized> Sync for Mutex<T> {}
 /// of scope), the lock will be unlocked.
 pub struct MutexGuard<'a, T: ?Sized + 'a> {
     lock: &'a Mutex<T>,
+    phantom: PhantomData<*mut ()>
 }
 
 impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
@@ -155,8 +155,6 @@ impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
         self.lock.shared_value.store(0, Ordering::SeqCst);
     }
 }
-
-impl<'a, T: ?Sized> !Send for MutexGuard<'a, T> {}
 
 impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
     type Target = T;

@@ -1,5 +1,5 @@
 [package]
 name = "spinlock"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Alex Norman <alex@x37v.info>"]
 
