@@ -1,8 +1,6 @@
 use std::marker::PhantomData;
 use std::cell::UnsafeCell;
-use std::fmt;
-use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::fmt; use std::ops::{Deref, DerefMut}; use std::sync::atomic::{AtomicUsize, Ordering};
 
 static ID_COUNT: AtomicUsize = AtomicUsize::new(1);
 
@@ -127,6 +125,12 @@ impl<T: ?Sized> Mutex<T> {
 impl<T: ?Sized + Default> Default for Mutex<T> {
     fn default() -> Mutex<T> {
         Mutex::new(Default::default())
+    }
+}
+
+impl<T: Sized> From<T> for Mutex<T> {
+    fn from(value: T) -> Self {
+        Mutex::new(value)
     }
 }
 
@@ -347,5 +351,17 @@ mod tests {
         assert_eq!(DROPS.load(Ordering::SeqCst), 0);
         drop(c);
         assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn from() {
+        let m: Arc<Mutex<usize>> = Arc::new(Mutex::from(1234));
+        assert_eq!(&1234usize, m.lock().deref());
+    }
+
+    #[test]
+    fn into() {
+        let m: Arc<Mutex<usize>> = Arc::new(1234.into());
+        assert_eq!(&1234usize, m.lock().deref());
     }
 }
